@@ -1,5 +1,8 @@
 FROM golang:1.21-alpine
 
+# Install CA certificates for SSL
+RUN apk add --no-cache ca-certificates
+
 WORKDIR /app
 
 COPY go.mod go.sum ./

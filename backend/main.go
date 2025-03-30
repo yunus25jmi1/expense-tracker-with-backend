@@ -44,20 +44,31 @@ func connectDB() error {
 		return fmt.Errorf("MONGODB_URI not set")
 	}
 
-	serverAPI := options.ServerAPI(options.ServerAPIVersion1)
-	opts := options.Client().ApplyURI(uri).
-		SetServerAPIOptions(serverAPI).
-		SetTLSConfig(&tls.Config{InsecureSkipVerify: true}) // Add this line
+	// Create a context with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
-	var err error
-	client, err = mongo.Connect(context.TODO(), opts)
-	if err != nil {
-		return err
+	// Configure SSL/TLS settings
+	tlsConfig := &tls.Config{
+		InsecureSkipVerify: false, // Keep certificate validation
+		MinVersion:         tls.VersionTLS12,
 	}
 
-	// Add connection verification
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	serverAPI := options.ServerAPI(options.ServerAPIVersion1)
+	opts := options.Client().
+		ApplyURI(uri).
+		SetServerAPIOptions(serverAPI).
+		SetTLSConfig(tlsConfig).
+		SetConnectTimeout(15 * time.Second).
+		SetSocketTimeout(30 * time.Second)
+
+	var err error
+	client, err = mongo.Connect(ctx, opts)
+	if err != nil {
+		return fmt.Errorf("failed to connect to MongoDB: %v", err)
+	}
+
+	// Verify connection
 	if err = client.Ping(ctx, nil); err != nil {
 		return fmt.Errorf("failed to ping MongoDB: %v", err)
 	}
