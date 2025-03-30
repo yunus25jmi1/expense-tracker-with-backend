@@ -1,0 +1,23 @@
+[
+  {
+    "id": "1743263372436818502",
+    "description": "Rent",
+    "amount": 4500,
+    "type": "expense",
+    "dateTime": 1743243420000
+  },
+  {
+    "id": "1743262948019101919",
+    "description": "Swiggy",
+    "amount": 1300,
+    "type": "expense",
+    "dateTime": 1743243060000
+  },
+  {
+    "id": "1743262885445313490",
+    "description": "Salary",
+    "amount": 45000,
+    "type": "income",
+    "dateTime": 1743243000000
+  }
+]

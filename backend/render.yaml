@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: neofinance-backend
+    env: go
+    buildCommand: go build -o neofinance
+    startCommand: ./neofinance
+    envVars:
+      - key: MONGODB_URI
+        value: your-mongodb-uri-from-atlas
+      - key: PORT
+        value: 8080
