@@ -2,12 +2,12 @@ FROM golang:1.21-alpine
 
 WORKDIR /app
 
-COPY go.mod ./
-RUN go mod download
+COPY go.mod go.sum ./
+RUN go mod download && go mod verify
 
 COPY . .
 
-RUN go build -o /neofinance
+RUN go build -mod=vendor -o /neofinance
 
 EXPOSE 8080
 
