@@ -40,7 +40,7 @@ function TransactionForm({ addTransaction }) {
     if (!formData.description || !formData.amount) return;
 
     try {
-      const response = await fetch('http://localhost:8080/transactions', {
+      const response = await fetch('https://expense-tracker-with-backend.onrender.com/transactions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -204,7 +204,7 @@ function App() {
   useEffect(() => {
     const fetchTransactions = async () => {
       try {
-        const response = await fetch('http://localhost:8080/transactions');
+        const response = await fetch('https://expense-tracker-with-backend.onrender.com/transactions');
         if (!response.ok) throw new Error('Failed to fetch');
         const data = await response.json();
         setTransactions(Array.isArray(data) ? data : []);
@@ -219,7 +219,7 @@ function App() {
 
   const deleteTransaction = async (id) => {
     try {
-      const response = await fetch(`http://localhost:8080/transactions/${id}`, {
+      const response = await fetch(`https://expense-tracker-with-backend.onrender.com/transactions/${id}`, {
         method: 'DELETE'
       });
       if (!response.ok) throw new Error('Delete failed');
