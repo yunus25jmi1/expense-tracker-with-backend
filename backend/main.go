@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -14,6 +13,8 @@ import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
+	"golang.org/x/net/http2"
+	"golang.org/x/net/http2/h2c"
 )
 
 type Transaction struct {
@@ -24,14 +25,13 @@ type Transaction struct {
 	DateTime    time.Time          `json:"dateTime" bson:"dateTime"`
 }
 
-var client *mongo.Client
 var collection *mongo.Collection
 
 func enableCORS(w *http.ResponseWriter, req *http.Request) {
 	(*w).Header().Set("Access-Control-Allow-Origin", "*")
 	(*w).Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
 	(*w).Header().Set("Access-Control-Allow-Headers", "Content-Type")
-
+	
 	if req.Method == "OPTIONS" {
 		(*w).WriteHeader(http.StatusOK)
 		return
@@ -44,32 +44,22 @@ func connectDB() error {
 		return fmt.Errorf("MONGODB_URI not set")
 	}
 
-	// Create a context with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	// Configure SSL/TLS settings
-	tlsConfig := &tls.Config{
-		InsecureSkipVerify: false, // Keep certificate validation
-		MinVersion:         tls.VersionTLS12,
-	}
-
 	serverAPI := options.ServerAPI(options.ServerAPIVersion1)
-	opts := options.Client().
+	clientOptions := options.Client().
 		ApplyURI(uri).
 		SetServerAPIOptions(serverAPI).
-		SetTLSConfig(tlsConfig).
-		SetConnectTimeout(15 * time.Second).
-		SetSocketTimeout(30 * time.Second)
+		SetTLSConfig(&tls.Config{InsecureSkipVerify: true})
 
-	var err error
-	client, err = mongo.Connect(ctx, opts)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	client, err := mongo.Connect(ctx, clientOptions)
 	if err != nil {
 		return fmt.Errorf("failed to connect to MongoDB: %v", err)
 	}
 
-	// Verify connection
-	if err = client.Ping(ctx, nil); err != nil {
+	err = client.Ping(ctx, nil)
+	if err != nil {
 		return fmt.Errorf("failed to ping MongoDB: %v", err)
 	}
 
@@ -77,25 +67,9 @@ func connectDB() error {
 	return nil
 }
 
-func handleTransactions(w http.ResponseWriter, r *http.Request) {
-	enableCORS(&w, r)
-	if r.Method == "OPTIONS" {
-		return
-	}
-
-	switch r.Method {
-	case "GET":
-		getTransactions(w, r)
-	case "POST":
-		createTransaction(w, r)
-	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-	}
-}
-
 func getTransactions(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-
+	enableCORS(&w, r)
+	
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -112,10 +86,13 @@ func getTransactions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(transactions)
 }
 
 func createTransaction(w http.ResponseWriter, r *http.Request) {
+	enableCORS(&w, r)
+	
 	var t struct {
 		Description string    `json:"description"`
 		Amount      float64   `json:"amount"`
@@ -152,8 +129,8 @@ func createTransaction(w http.ResponseWriter, r *http.Request) {
 
 func deleteTransaction(w http.ResponseWriter, r *http.Request) {
 	enableCORS(&w, r)
+	
 	id := r.URL.Path[len("/transactions/"):]
-
 	objID, err := primitive.ObjectIDFromHex(id)
 	if err != nil {
 		http.Error(w, "Invalid ID format", http.StatusBadRequest)
@@ -177,14 +154,29 @@ func deleteTransaction(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func healthCheck(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
 func main() {
 	if err := connectDB(); err != nil {
 		log.Fatalf("Failed to connect to MongoDB: %v", err)
 	}
-	defer client.Disconnect(context.Background())
 
-	http.HandleFunc("/transactions", handleTransactions)
-	http.HandleFunc("/transactions/", deleteTransaction)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", healthCheck)
+	mux.HandleFunc("/transactions", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			getTransactions(w, r)
+		case http.MethodPost:
+			createTransaction(w, r)
+		default:
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+	mux.HandleFunc("/transactions/", deleteTransaction)
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -192,5 +184,5 @@ func main() {
 	}
 
 	log.Printf("Server running on port %s", port)
-	log.Fatal(http.ListenAndServe(":"+port, nil))
+	log.Fatal(http.ListenAndServe(":"+port, h2c.NewHandler(mux, &http2.Server{})))
 }
