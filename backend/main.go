@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -22,10 +24,8 @@ type Transaction struct {
 	DateTime    time.Time          `json:"dateTime" bson:"dateTime"`
 }
 
-var (
-	client     *mongo.Client
-	collection *mongo.Collection
-)
+var client *mongo.Client
+var collection *mongo.Collection
 
 func enableCORS(w *http.ResponseWriter, req *http.Request) {
 	(*w).Header().Set("Access-Control-Allow-Origin", "*")
@@ -38,26 +38,32 @@ func enableCORS(w *http.ResponseWriter, req *http.Request) {
 	}
 }
 
-func connectDB() {
-	// Set up MongoDB connection
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	var err error
-	client, err = mongo.Connect(ctx, options.Client().ApplyURI(
-		"mongodb://localhost:27017",
-	))
-	if err != nil {
-		log.Fatal(err)
+func connectDB() error {
+	uri := os.Getenv("MONGODB_URI")
+	if uri == "" {
+		return fmt.Errorf("MONGODB_URI not set")
 	}
 
-	// Check connection
-	err = client.Ping(ctx, nil)
+	serverAPI := options.ServerAPI(options.ServerAPIVersion1)
+	opts := options.Client().ApplyURI(uri).
+		SetServerAPIOptions(serverAPI).
+		SetTLSConfig(&tls.Config{InsecureSkipVerify: true}) // Add this line
+
+	var err error
+	client, err = mongo.Connect(context.TODO(), opts)
 	if err != nil {
-		log.Fatal(err)
+		return err
+	}
+
+	// Add connection verification
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err = client.Ping(ctx, nil); err != nil {
+		return fmt.Errorf("failed to ping MongoDB: %v", err)
 	}
 
 	collection = client.Database("neofinance").Collection("transactions")
+	return nil
 }
 
 func handleTransactions(w http.ResponseWriter, r *http.Request) {
@@ -77,6 +83,8 @@ func handleTransactions(w http.ResponseWriter, r *http.Request) {
 }
 
 func getTransactions(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -93,7 +101,6 @@ func getTransactions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(transactions)
 }
 
@@ -145,9 +152,14 @@ func deleteTransaction(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err = collection.DeleteOne(ctx, bson.M{"_id": objID})
+	result, err := collection.DeleteOne(ctx, bson.M{"_id": objID})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if result.DeletedCount == 0 {
+		http.Error(w, "Transaction not found", http.StatusNotFound)
 		return
 	}
 
@@ -155,13 +167,19 @@ func deleteTransaction(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
-	connectDB()
+	if err := connectDB(); err != nil {
+		log.Fatalf("Failed to connect to MongoDB: %v", err)
+	}
 	defer client.Disconnect(context.Background())
 
 	http.HandleFunc("/transactions", handleTransactions)
 	http.HandleFunc("/transactions/", deleteTransaction)
 
-	port := ":8080"
-	fmt.Printf("Server running on http://localhost%s\n", port)
-	log.Fatal(http.ListenAndServe(port, nil))
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+
+	log.Printf("Server running on port %s", port)
+	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
