@@ -28,14 +28,18 @@ type Transaction struct {
 
 var collection *mongo.Collection
 
-func enableCORS(w *http.ResponseWriter, req *http.Request) {
-	(*w).Header().Set("Access-Control-Allow-Origin", "*")
-	(*w).Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-	(*w).Header().Set("Access-Control-Allow-Headers", "Content-Type")
+func corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 
-	if req.Method == "OPTIONS" {
-		(*w).WriteHeader(http.StatusOK)
-		return
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		next.ServeHTTP(w, r)
 	}
 }
 
@@ -69,8 +73,6 @@ func connectDB() error {
 }
 
 func getTransactions(w http.ResponseWriter, r *http.Request) {
-	enableCORS(&w, r)
-
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -92,8 +94,6 @@ func getTransactions(w http.ResponseWriter, r *http.Request) {
 }
 
 func createTransaction(w http.ResponseWriter, r *http.Request) {
-	enableCORS(&w, r)
-
 	var requestBody struct {
 		Description string  `json:"description"`
 		Amount      float64 `json:"amount"`
@@ -155,8 +155,6 @@ func createTransaction(w http.ResponseWriter, r *http.Request) {
 }
 
 func deleteTransaction(w http.ResponseWriter, r *http.Request) {
-	enableCORS(&w, r)
-
 	id := r.URL.Path[len("/transactions/"):]
 	if id == "" {
 		http.Error(w, "missing transaction ID", http.StatusBadRequest)
@@ -205,8 +203,10 @@ func main() {
 	}()
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/health", healthCheck)
-	mux.HandleFunc("/transactions", func(w http.ResponseWriter, r *http.Request) {
+
+	// Apply CORS middleware to all handlers
+	mux.HandleFunc("/health", corsMiddleware(healthCheck))
+	mux.HandleFunc("/transactions", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
 			getTransactions(w, r)
@@ -215,8 +215,16 @@ func main() {
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
-	})
-	mux.HandleFunc("/transactions/", deleteTransaction)
+	}))
+
+	mux.HandleFunc("/transactions/", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodDelete:
+			deleteTransaction(w, r)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	}))
 
 	port := os.Getenv("PORT")
 	if port == "" {
