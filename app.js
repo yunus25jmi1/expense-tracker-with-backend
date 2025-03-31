@@ -19,7 +19,7 @@ class ErrorBoundary extends React.Component {
       return (
         <div className="text-center p-6 text-red-400">
           <h2>Something went wrong</h2>
-          <p>{this.state.error ? this.state.error.toString() : ""}</p>
+          <p>{this.state.error?.toString()}</p>
         </div>
       );
     }
@@ -37,7 +37,10 @@ function TransactionForm({ addTransaction }) {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!formData.description || !formData.amount) return;
+    if (!formData.description || !formData.amount) {
+      alert('Please fill in all required fields');
+      return;
+    }
 
     try {
       const response = await fetch('https://expense-tracker-with-backend.onrender.com/transactions', {
@@ -46,22 +49,31 @@ function TransactionForm({ addTransaction }) {
         body: JSON.stringify({
           ...formData,
           amount: parseFloat(formData.amount),
-          dateTime: new Date(formData.dateTime).getTime()
+          dateTime: new Date(formData.dateTime).toISOString()
         })
       });
+
+      const responseData = await response.json();
       
-      if (response.ok) {
-        const newTransaction = await response.json();
-        addTransaction(newTransaction);
-        setFormData({
-          description: '',
-          amount: '',
-          type: 'income',
-          dateTime: new Date().toISOString().slice(0, 16)
-        });
+      if (!response.ok) {
+        throw new Error(responseData.error || 'Failed to save transaction');
       }
+
+      addTransaction({
+        ...responseData,
+        id: responseData._id // Map MongoDB _id to id
+      });
+      
+      setFormData({
+        description: '',
+        amount: '',
+        type: 'income',
+        dateTime: new Date().toISOString().slice(0, 16)
+      });
+      
     } catch (error) {
-      console.error('Error adding transaction:', error);
+      console.error('Transaction error:', error);
+      alert(error.message);
     }
   };
 
@@ -76,6 +88,7 @@ function TransactionForm({ addTransaction }) {
             onChange={(e) => setFormData({ ...formData, description: e.target.value })}
             placeholder="Description"
             className="w-full px-4 py-3 bg-gray-800 text-gray-100 rounded-lg focus:ring-2 focus:ring-indigo-500 border-none"
+            required
           />
         </div>
         
@@ -88,6 +101,7 @@ function TransactionForm({ addTransaction }) {
               placeholder="Amount"
               step="0.01"
               className="w-full px-4 py-3 bg-gray-800 text-gray-100 rounded-lg focus:ring-2 focus:ring-indigo-500 border-none"
+              required
             />
           </div>
           <div>
@@ -96,6 +110,7 @@ function TransactionForm({ addTransaction }) {
               value={formData.dateTime}
               onChange={(e) => setFormData({ ...formData, dateTime: e.target.value })}
               className="w-full px-4 py-3 bg-gray-800 text-gray-100 rounded-lg focus:ring-2 focus:ring-indigo-500 border-none"
+              required
             />
           </div>
         </div>
@@ -129,14 +144,16 @@ function TransactionForm({ addTransaction }) {
 }
 
 function TransactionList({ transactions, deleteTransaction }) {
-  const formatDate = (timestamp) => 
-    new Date(timestamp).toLocaleDateString('en-US', {
+  const formatDate = (isoString) => {
+    const date = new Date(isoString);
+    return date.toLocaleDateString('en-US', {
       month: 'short',
       day: 'numeric',
       hour: 'numeric',
       minute: '2-digit',
       hour12: true
     });
+  };
 
   return (
     <div className="max-w-md mx-auto space-y-2">
@@ -163,6 +180,7 @@ function TransactionList({ transactions, deleteTransaction }) {
             <button
               onClick={() => deleteTransaction(transaction.id)}
               className="text-gray-400 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-opacity"
+              aria-label="Delete transaction"
             >
               ×
             </button>
@@ -205,15 +223,32 @@ function App() {
     const fetchTransactions = async () => {
       try {
         const response = await fetch('https://expense-tracker-with-backend.onrender.com/transactions');
-        if (!response.ok) throw new Error('Failed to fetch');
+        
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error(errorData.error || 'Failed to load transactions');
+        }
+
         const data = await response.json();
-        setTransactions(Array.isArray(data) ? data : []);
+        
+        const formattedTransactions = data.map(t => ({
+          id: t._id, // Map MongoDB _id to id
+          description: t.description,
+          amount: t.amount,
+          type: t.type,
+          dateTime: t.dateTime // Already in ISO format from backend
+        }));
+
+        setTransactions(formattedTransactions);
+        
       } catch (err) {
         setError(err.message);
+        console.error('Fetch error:', err);
       } finally {
         setLoading(false);
       }
     };
+
     fetchTransactions();
   }, []);
 
@@ -222,10 +257,18 @@ function App() {
       const response = await fetch(`https://expense-tracker-with-backend.onrender.com/transactions/${id}`, {
         method: 'DELETE'
       });
-      if (!response.ok) throw new Error('Delete failed');
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to delete transaction');
+      }
+
       setTransactions(prev => prev.filter(t => t.id !== id));
+      
     } catch (err) {
       setError(err.message);
+      alert(err.message);
+      console.error('Delete error:', err);
     }
   };
 
@@ -243,7 +286,7 @@ function App() {
 
   const balance = totalIncome - totalExpense;
 
-  if (loading) return <div className="text-center p-8 text-gray-400">Loading...</div>;
+  if (loading) return <div className="text-center p-8 text-gray-400">Loading transactions...</div>;
   if (error) return <div className="text-center p-8 text-red-400">Error: {error}</div>;
 
   return (

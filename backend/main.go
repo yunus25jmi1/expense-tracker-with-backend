@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -18,7 +19,7 @@ import (
 )
 
 type Transaction struct {
-	ID          primitive.ObjectID `json:"id" bson:"_id,omitempty"`
+	ID          primitive.ObjectID `json:"_id,omitempty" bson:"_id,omitempty"`
 	Description string             `json:"description" bson:"description"`
 	Amount      float64            `json:"amount" bson:"amount"`
 	Type        string             `json:"type" bson:"type"`
@@ -31,7 +32,7 @@ func enableCORS(w *http.ResponseWriter, req *http.Request) {
 	(*w).Header().Set("Access-Control-Allow-Origin", "*")
 	(*w).Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
 	(*w).Header().Set("Access-Control-Allow-Headers", "Content-Type")
-	
+
 	if req.Method == "OPTIONS" {
 		(*w).WriteHeader(http.StatusOK)
 		return
@@ -41,7 +42,7 @@ func enableCORS(w *http.ResponseWriter, req *http.Request) {
 func connectDB() error {
 	uri := os.Getenv("MONGODB_URI")
 	if uri == "" {
-		return fmt.Errorf("MONGODB_URI not set")
+		return fmt.Errorf("MONGODB_URI environment variable not set")
 	}
 
 	serverAPI := options.ServerAPI(options.ServerAPIVersion1)
@@ -69,20 +70,20 @@ func connectDB() error {
 
 func getTransactions(w http.ResponseWriter, r *http.Request) {
 	enableCORS(&w, r)
-	
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	cursor, err := collection.Find(ctx, bson.M{})
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("database error: %v", err), http.StatusInternalServerError)
 		return
 	}
 	defer cursor.Close(ctx)
 
 	var transactions []Transaction
 	if err = cursor.All(ctx, &transactions); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("decoding error: %v", err), http.StatusInternalServerError)
 		return
 	}
 
@@ -92,24 +93,35 @@ func getTransactions(w http.ResponseWriter, r *http.Request) {
 
 func createTransaction(w http.ResponseWriter, r *http.Request) {
 	enableCORS(&w, r)
-	
-	var t struct {
-		Description string    `json:"description"`
-		Amount      float64   `json:"amount"`
-		Type        string    `json:"type"`
-		DateTime    time.Time `json:"dateTime"`
+
+	var requestBody struct {
+		Description string  `json:"description"`
+		Amount      float64 `json:"amount"`
+		Type        string  `json:"type"`
+		DateTime    string  `json:"dateTime"`
 	}
 
-	if err := json.NewDecoder(r.Body).Decode(&t); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if err := json.NewDecoder(r.Body).Decode(&requestBody); err != nil {
+		http.Error(w, fmt.Sprintf("invalid request body: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	if requestBody.Description == "" || requestBody.Amount == 0 || requestBody.Type == "" || requestBody.DateTime == "" {
+		http.Error(w, "missing required fields", http.StatusBadRequest)
+		return
+	}
+
+	parsedTime, err := time.Parse(time.RFC3339, requestBody.DateTime)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("invalid date format: %v", err), http.StatusBadRequest)
 		return
 	}
 
 	newTransaction := Transaction{
-		Description: t.Description,
-		Amount:      t.Amount,
-		Type:        t.Type,
-		DateTime:    t.DateTime,
+		Description: requestBody.Description,
+		Amount:      requestBody.Amount,
+		Type:        requestBody.Type,
+		DateTime:    parsedTime,
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -117,23 +129,43 @@ func createTransaction(w http.ResponseWriter, r *http.Request) {
 
 	result, err := collection.InsertOne(ctx, newTransaction)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("insert error: %v", err), http.StatusInternalServerError)
 		return
 	}
 
 	newTransaction.ID = result.InsertedID.(primitive.ObjectID)
+
+	response := struct {
+		ID          string    `json:"_id"`
+		Description string    `json:"description"`
+		Amount      float64   `json:"amount"`
+		Type        string    `json:"type"`
+		DateTime    time.Time `json:"dateTime"`
+	}{
+		ID:          newTransaction.ID.Hex(),
+		Description: newTransaction.Description,
+		Amount:      newTransaction.Amount,
+		Type:        newTransaction.Type,
+		DateTime:    newTransaction.DateTime,
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(newTransaction)
+	json.NewEncoder(w).Encode(response)
 }
 
 func deleteTransaction(w http.ResponseWriter, r *http.Request) {
 	enableCORS(&w, r)
-	
+
 	id := r.URL.Path[len("/transactions/"):]
+	if id == "" {
+		http.Error(w, "missing transaction ID", http.StatusBadRequest)
+		return
+	}
+
 	objID, err := primitive.ObjectIDFromHex(id)
 	if err != nil {
-		http.Error(w, "Invalid ID format", http.StatusBadRequest)
+		http.Error(w, "invalid ID format", http.StatusBadRequest)
 		return
 	}
 
@@ -142,12 +174,12 @@ func deleteTransaction(w http.ResponseWriter, r *http.Request) {
 
 	result, err := collection.DeleteOne(ctx, bson.M{"_id": objID})
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("delete error: %v", err), http.StatusInternalServerError)
 		return
 	}
 
 	if result.DeletedCount == 0 {
-		http.Error(w, "Transaction not found", http.StatusNotFound)
+		http.Error(w, "transaction not found", http.StatusNotFound)
 		return
 	}
 
@@ -156,13 +188,21 @@ func deleteTransaction(w http.ResponseWriter, r *http.Request) {
 
 func healthCheck(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	json.NewEncoder(w).Encode(map[string]string{
+		"status":  "ok",
+		"service": "expense-tracker",
+	})
 }
 
 func main() {
 	if err := connectDB(); err != nil {
-		log.Fatalf("Failed to connect to MongoDB: %v", err)
+		log.Fatalf("Database connection failed: %v", err)
 	}
+	defer func() {
+		if err := collection.Database().Client().Disconnect(context.Background()); err != nil {
+			log.Printf("Error disconnecting from MongoDB: %v", err)
+		}
+	}()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", healthCheck)
@@ -173,7 +213,7 @@ func main() {
 		case http.MethodPost:
 			createTransaction(w, r)
 		default:
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
 	})
 	mux.HandleFunc("/transactions/", deleteTransaction)
@@ -183,6 +223,13 @@ func main() {
 		port = "8080"
 	}
 
-	log.Printf("Server running on port %s", port)
-	log.Fatal(http.ListenAndServe(":"+port, h2c.NewHandler(mux, &http2.Server{})))
+	server := &http.Server{
+		Addr:    ":" + port,
+		Handler: h2c.NewHandler(mux, &http2.Server{}),
+	}
+
+	log.Printf("Server starting on port %s", port)
+	if err := server.ListenAndServe(); err != nil {
+		log.Fatalf("Server failed: %v", err)
+	}
 }
