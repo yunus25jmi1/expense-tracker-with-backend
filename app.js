@@ -19,8 +19,7 @@ class ErrorBoundary extends React.Component {
       return (
         <div className="text-center p-6 text-red-400">
           <h2>Something went wrong</h2>
-          <p>{this.state.error?.toString()}</p>
-        </div>
+          <p>{this.state.error ? this.state.error.toString() : ""}</p>        </div>
       );
     }
     return this.props.children;
